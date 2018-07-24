@@ -794,9 +794,6 @@ class Statistics(object):
     def numCallsWithPch(self):
         return self._stats[Statistics.CALLS_WITH_PCH]
 
-    def registerCallWithPch(self):
-        self._stats[Statistics.CALLS_WITH_PCH] += 1
-
     def numCallsForLinking(self):
         return self._stats[Statistics.CALLS_FOR_LINKING]
 
@@ -886,10 +883,6 @@ class MultipleSourceFilesComplexError(AnalysisError):
 
 
 class CalledForLinkError(AnalysisError):
-    pass
-
-
-class CalledWithPchError(AnalysisError):
     pass
 
 
@@ -1429,8 +1422,7 @@ clcache statistics:
     called for linking         : {}
     called for external debug  : {}
     called w/o source          : {}
-    called w/ multiple sources : {}
-    called w/ PCH              : {}""".strip()
+    called w/ multiple sources : {}""".strip()
 
     with cache.statistics.lock, cache.statistics as stats, cache.configuration as cfg:
         print(template.format(
@@ -1449,7 +1441,6 @@ clcache statistics:
             stats.numCallsForExternalDebugInfo(),
             stats.numCallsWithoutSourceFile(),
             stats.numCallsWithMultipleSourceFiles(),
-            stats.numCallsWithPch(),
         ))
 
 
@@ -1649,9 +1640,6 @@ def processCompileRequest(cache, compiler, args):
     except MultipleSourceFilesComplexError:
         printTraceStatement("Cannot cache invocation as {}: multiple source files found".format(cmdLine))
         updateCacheStatistics(cache, Statistics.registerCallWithMultipleSourceFiles)
-    except CalledWithPchError:
-        printTraceStatement("Cannot cache invocation as {}: precompiled headers in use".format(cmdLine))
-        updateCacheStatistics(cache, Statistics.registerCallWithPch)
     except CalledForLinkError:
         printTraceStatement("Cannot cache invocation as {}: called for linking".format(cmdLine))
         updateCacheStatistics(cache, Statistics.registerCallForLinking)
