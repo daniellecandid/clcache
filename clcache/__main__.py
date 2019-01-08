@@ -124,6 +124,8 @@ class SuspendTracker():
                 SuspendTracker.fileTracker = windll.FileTracker
             elif windll.kernel32.GetModuleHandleW("FileTracker32.dll"):
                 SuspendTracker.fileTracker = windll.FileTracker32
+            elif windll.kernel32.GetModuleHandleW("FileTracker64.dll"):
+                SuspendTracker.fileTracker = windll.FileTracker64
 
     def __enter__(self):
         SuspendTracker.suspend()
