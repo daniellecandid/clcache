@@ -3,6 +3,17 @@ clcache changelog
 
 ## Upcoming release
 
+ * Feature: Allow compressing cache content via new `CLCACHE_COMPRESS` and
+   `CLCACHE_COMPRESSLEVEL` environment variables. (GH #328)
+ * Bugfix: Fixed a race condition resulting in clcache to fail with an error
+   message like `PermissionError: [WinError 5] Access is denied:
+   'XXXX\\stats.txt.new' -> 'XXXX\\stats.txt'` (GH #334)
+ * The path to the compiler executable can optionally be specified on the
+   command line, instead of with an environment variable, or searching the PATH. 
+ * Added support for clang-cl
+
+## clcache 4.2.0 (2018-09-06)
+
  * Feature: Enable installation directly from GitHub via 'pip install'
  * Bugfix: Fixed potential corruption of cache in case clcache is terminated
    while writing a cache entry or updating the cache statistics.
@@ -18,6 +29,8 @@ clcache changelog
    entries in case it gets terminated in the middle of copying a file (GH #263).
  * Feature: Added 'monkey' script to simplify integrating clcache with distutils-based
    workflows (GH #284).
+ * Feature: Drop version in directory structure of chocolatey (nuget) target
+   package (GH #318).
 
 ## clcache 4.1.0 (2017-05-23)
 
