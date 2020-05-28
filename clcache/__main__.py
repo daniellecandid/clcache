@@ -1088,7 +1088,7 @@ def findCompilerBinary():
                 return path
     return None
 
-of = open('X:/clcache.log', 'w')
+of = open('X:/clcache.log', 'a')
 
 def printTraceStatement(msg: str) -> None:
     if "CLCACHE_LOG" in os.environ:
