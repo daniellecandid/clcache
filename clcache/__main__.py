@@ -71,6 +71,10 @@ BASEDIR_REPLACEMENT = '?'
 NMPWAIT_WAIT_FOREVER = wintypes.DWORD(0xFFFFFFFF)
 ERROR_PIPE_BUSY = 231
 
+# Toolset version 140
+# https://devblogs.microsoft.com/cppblog/side-by-side-minor-version-msvc-toolsets-in-visual-studio-2017/
+TOOLSET_VERSION_140 = 140
+
 # ManifestEntry: an entry in a manifest file
 # `includeFiles`: list of paths to include files, which this source file uses
 # `includesContentsHash`: hash of the contents of the includeFiles
@@ -118,6 +122,46 @@ def normalizeBaseDir(baseDir):
         # Converts empty string to None
         return None
 
+
+class SuspendTracker():
+    fileTracker = None
+    def __init__(self):
+        if not SuspendTracker.fileTracker:
+            if windll.kernel32.GetModuleHandleW("FileTracker.dll"):
+                SuspendTracker.fileTracker = windll.FileTracker
+            elif windll.kernel32.GetModuleHandleW("FileTracker32.dll"):
+                SuspendTracker.fileTracker = windll.FileTracker32
+            elif windll.kernel32.GetModuleHandleW("FileTracker64.dll"):
+                SuspendTracker.fileTracker = windll.FileTracker64
+
+    def __enter__(self):
+        SuspendTracker.suspend()
+
+    def __exit__(self, typ, value, traceback):
+        SuspendTracker.resume()
+
+    @staticmethod
+    def suspend():
+        if SuspendTracker.fileTracker:
+            SuspendTracker.fileTracker.SuspendTracking()
+
+    @staticmethod
+    def resume():
+        if SuspendTracker.fileTracker:
+            SuspendTracker.fileTracker.ResumeTracking()
+
+def isTrackerEnabled():
+    return 'TRACKER_ENABLED' in os.environ
+
+def untrackable(func):
+    if not isTrackerEnabled():
+        return func
+
+    def untrackedFunc(*args, **kwargs):
+        with SuspendTracker():
+            return func(*args, **kwargs)
+
+    return untrackedFunc
 
 def getCachedCompilerConsoleOutput(path):
     try:
@@ -188,6 +232,7 @@ class ManifestSection:
     def manifestFiles(self):
         return filesBeneath(self.manifestSectionDir)
 
+    @untrackable
     def setManifest(self, manifestHash, manifest):
         manifestPath = self.manifestPath(manifestHash)
         printTraceStatement("Writing manifest with manifestHash = {} to {}".format(manifestHash, manifestPath))
@@ -198,6 +243,7 @@ class ManifestSection:
             jsonobject = {'entries': entries}
             json.dump(jsonobject, outFile, sort_keys=True, indent=2)
 
+    @untrackable
     def getManifest(self, manifestHash):
         fileName = self.manifestPath(manifestHash)
         if not os.path.exists(fileName):
@@ -738,6 +784,7 @@ class Statistics:
         self._stats = None
         self.lock = CacheLock.forPath(self._statsFile)
 
+    @untrackable
     def __enter__(self):
         self._stats = PersistentJSONDict(self._statsFile)
         for k in Statistics.RESETTABLE_KEYS | Statistics.NON_RESETTABLE_KEYS:
@@ -745,6 +792,7 @@ class Statistics:
                 self._stats[k] = 0
         return self
 
+    @untrackable
     def __exit__(self, typ, value, traceback):
         # Does not write to disc when unchanged
         self._stats.save()
@@ -1686,6 +1734,35 @@ def filterSourceFiles(cmdLine: List[str], sourceFiles: List[Tuple[str, str]]) ->
         if not (arg in setOfSources or arg.startswith(skippedArgs))
     )
 
+
+def findCompilerVersion(compiler: str) -> int:
+    compilerInfo = subprocess.Popen([compiler],
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT)
+    compilerVersionLine = compilerInfo.communicate()[0].decode('utf-8').splitlines()[0]
+    compilerVersion = compilerVersionLine[compilerVersionLine.find("Version ") + 8:
+                                          compilerVersionLine.find(" for")]
+    return int(compilerVersion[:2] + compilerVersion[3:5])
+
+
+def findToolsetVersion(compilerVersion: int) -> int:
+    versionMap = {1400: 80,
+                  1500: 90,
+                  1600: 100,
+                  1700: 110,
+                  1800: 120,
+                  1900: 140}
+
+    if compilerVersion in versionMap:
+        return versionMap[compilerVersion]
+    elif 1910 <= compilerVersion < 1920:
+        return 141
+    elif 1920 <= compilerVersion < 1930:
+        return 142
+    else:
+        raise LogicException('Bad cl.exe version: {}'.format(compilerVersion))
+
+
 def scheduleJobs(cache: Any, compiler: str, cmdLine: List[str], environment: Any,
                  sourceFiles: List[Tuple[str, str]], objectFiles: List[str]) -> int:
     # Filter out all source files from the command line to form baseCmdLine
@@ -1693,7 +1770,14 @@ def scheduleJobs(cache: Any, compiler: str, cmdLine: List[str], environment: Any
 
     exitCode = 0
     cleanupRequired = False
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobCount(cmdLine)) as executor:
+
+    def poolExecutor(*args, **kwargs) -> concurrent.futures.Executor:
+        if isTrackerEnabled():
+            if findToolsetVersion(findCompilerVersion(compiler)) < TOOLSET_VERSION_140:
+                return concurrent.futures.ProcessPoolExecutor(*args, **kwargs)
+        return concurrent.futures.ThreadPoolExecutor(*args, **kwargs)
+
+    with poolExecutor(max_workers=min(jobCount(cmdLine), len(objectFiles))) as executor:
         jobs = []
         for (srcFile, srcLanguage), objFile in zip(sourceFiles, objectFiles):
             jobCmdLine = baseCmdLine + [srcLanguage + srcFile]

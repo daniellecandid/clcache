@@ -1166,6 +1166,29 @@ class TestCompression(unittest.TestCase):
             self.assertNotEqual(os.path.getsize(srcFilePath), os.path.getsize(tmpFilePath))
             self.assertEqual(os.path.getsize(srcFilePath), os.path.getsize(dstFilePath))
 
+class TestToolsetVersion(unittest.TestCase):
+    def testCorrectMapping(self):
+        from clcache.__main__ import findToolsetVersion
+
+        for i in range(0, 5):
+            compVer, toolVer = ((i * 100) + 1400), ((i * 10) + 80)
+            self.assertEqual(findToolsetVersion(compVer), toolVer)
+        self.assertEqual(findToolsetVersion(1900), 140)
+        for compVer in range(1910, 1920):
+            self.assertEqual(findToolsetVersion(compVer), 141)
+        for compVer in range(1920, 1930):
+            self.assertEqual(findToolsetVersion(compVer), 142)
+
+    def testIncorrectMapping(self):
+        from clcache.__main__ import findToolsetVersion
+        from clcache.__main__ import LogicException
+
+        with self.assertRaises(LogicException):
+            findToolsetVersion(100)
+        with self.assertRaises(LogicException):
+            findToolsetVersion(1456)
+        with self.assertRaises(LogicException):
+            findToolsetVersion(1930)
 
 if __name__ == '__main__':
     unittest.TestCase.longMessage = True

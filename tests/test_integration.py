@@ -1195,6 +1195,109 @@ class TestCleanCache(unittest.TestCase):
             self.assertEqual(subprocess.call(cmd, env=customEnv), 0)
 
 
+@pytest.mark.skipif(os.environ["VisualStudioVersion"] < "14.0", reason="Require newer visual studio")
+class TestMSBuildV140(unittest.TestCase):
+    def _clean(self):
+        cmd = self.getBuildCmd()
+        subprocess.check_call(cmd + ["/t:Clean"])
+
+    def setUp(self):
+        with cd(os.path.join(ASSETS_DIR, "msbuild")):
+            self._clean()
+
+    def getBuildCmd(self):
+        return ["msbuild", "/p:Configuration=Release", "/nologo", "/verbosity:minimal",
+                "/p:PlatformToolset=v140", "/p:ClToolExe=clcache.exe"]
+
+    def testClean(self):
+        with tempfile.TemporaryDirectory(dir=os.path.join(ASSETS_DIR, "msbuild")) as tempDir:
+            customEnv = dict(os.environ, CLCACHE_DIR=tempDir)
+
+            with cd(os.path.join(ASSETS_DIR, "msbuild")):
+                cmd = self.getBuildCmd()
+
+                # Compile once to insert the objects in the cache
+                subprocess.check_call(cmd, env=customEnv)
+
+                # build Clean target
+                subprocess.check_call(cmd + ["/t:Clean"], env=customEnv)
+
+            cache = clcache.Cache(tempDir)
+            with cache.statistics as stats:
+                self.assertEqual(stats.numCallsForExternalDebugInfo(), 1)
+                self.assertEqual(stats.numCacheEntries(), 2)
+
+    def testIncrementalBuild(self):
+        with tempfile.TemporaryDirectory(dir=os.path.join(ASSETS_DIR, "msbuild")) as tempDir:
+            customEnv = dict(os.environ, CLCACHE_DIR=tempDir)
+            cmd = self.getBuildCmd()
+
+            with cd(os.path.join(ASSETS_DIR, "msbuild")):
+                # Compile once to insert the objects in the cache
+                subprocess.check_call(cmd, env=customEnv)
+
+                output = subprocess.check_output(cmd, env=customEnv, stderr=subprocess.STDOUT)
+                output = output.decode("utf-8")
+
+
+            self.assertTrue("another.cpp" not in output)
+            self.assertTrue("minimal.cpp" not in output)
+            self.assertTrue("fibonacci.cpp" not in output)
+
+
+class TestMSBuildV120(unittest.TestCase):
+    def _clean(self):
+        cmd = self.getBuildCmd()
+        subprocess.check_call(cmd + ["/t:Clean"])
+
+        # workaround due to cl.cache.exe is not frozen it create no cl.read.1.tlog, but
+        # this file is important for v120 toolchain, see comment at getMSBuildCmd
+        try:
+            os.makedirs(os.path.join("Release", "test.tlog"))
+        except FileExistsError:
+            pass
+        with open(os.path.join("Release", "test.tlog", "cl.read.1.tlog"), "w"),\
+             open(os.path.join("Release", "test.tlog", "cl.write.1.tlog"), "w"):
+            pass
+
+    def setUp(self):
+        with cd(os.path.join(ASSETS_DIR, "msbuild")):
+            self._clean()
+
+    def getBuildCmd(self):
+        # v120 toolchain hardcoded "cl.read.1.tlog" and "cl.*.read.1.tlog"
+        # file names to inspect as input dependency.
+        # The best way to use clcache with v120 toolchain is to froze clcache to cl.exe
+        # and then specify ClToolPath property.
+
+        # There is no frozen cl.exe in tests available, as workaround we would use cl.cache.exe
+        # and manually create cl.read.1.tlog empty file, without this file msbuild think that
+        # FileTracker created wrong tlogs.
+        return ["msbuild", "/p:Configuration=Release", "/nologo", "/verbosity:minimal",
+                "/p:PlatformToolset=v120", "/p:ClToolExe=cl.cache.exe"]
+
+    def testIncrementalBuild(self):
+        with tempfile.TemporaryDirectory(dir=os.path.join(ASSETS_DIR, "msbuild")) as tempDir:
+            customEnv = dict(os.environ, CLCACHE_DIR=tempDir)
+            cmd = self.getBuildCmd()
+
+            with cd(os.path.join(ASSETS_DIR, "msbuild")):
+                # Compile once to insert the objects in the cache
+                subprocess.check_call(cmd, env=customEnv)
+
+                self._clean()
+
+                # Compile using cached objects
+                subprocess.check_call(cmd, env=customEnv)
+
+                output = subprocess.check_output(cmd, env=customEnv, stderr=subprocess.STDOUT)
+                output = output.decode("utf-8")
+
+            self.assertTrue("another.cpp" not in output)
+            self.assertTrue("minimal.cpp" not in output)
+            self.assertTrue("fibonacci.cpp" not in output)
+
+
 if __name__ == '__main__':
     unittest.TestCase.longMessage = True
     unittest.main()

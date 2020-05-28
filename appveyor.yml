@@ -16,8 +16,8 @@ install:
   - 7z x memcached.zip -y
   - ps: $Memcached = Start-Process memcached\memcached.exe -PassThru
 
-  # Make compiler available (use MSVC 2013, 32 bit)
-  - call "%ProgramFiles(x86)%\Microsoft Visual Studio 12.0\VC\vcvarsall.bat" x86
+  # Make compiler available (use MSVC 2015, 32 bit)
+  - call "%ProgramFiles(x86)%\Microsoft Visual Studio 14.0\VC\vcvarsall.bat" x86
 
   # Check compiler version
   - cl
