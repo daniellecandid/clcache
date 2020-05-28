@@ -970,7 +970,8 @@ def getFileHashes(filePaths):
 def getFileHash(filePath, additionalData=None):
     hasher = HashAlgorithm()
     with open(filePath, 'rb') as inFile:
-        hasher.update(inFile.read())
+        for chunk in iter(lambda: inFile.read(4096), b""):
+            hasher.update(chunk)
     if additionalData is not None:
         # Encoding of this additional data does not really matter
         # as long as we keep it fixed, otherwise hashes change.
