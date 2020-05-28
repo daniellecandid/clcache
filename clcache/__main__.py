@@ -714,8 +714,11 @@ class PersistentJSONDict:
 
     def save(self):
         if self._dirty:
-            with atomic_write(self._fileName, overwrite=True) as f:
-                json.dump(self._dict, f, sort_keys=True, indent=4)
+            try:
+                with atomic_write(self._fileName, overwrite=True) as f:
+                    json.dump(self._dict, f, sort_keys=True, indent=4)
+            except OSError:
+                pass
 
     def __setitem__(self, key, value):
         self._dict[key] = value
