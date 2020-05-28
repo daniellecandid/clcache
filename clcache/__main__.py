@@ -1088,12 +1088,13 @@ def findCompilerBinary():
                 return path
     return None
 
+of = open('X:/clcache.log', 'w')
 
 def printTraceStatement(msg: str) -> None:
     if "CLCACHE_LOG" in os.environ:
         scriptDir = os.path.realpath(os.path.dirname(sys.argv[0]))
         with OUTPUT_LOCK:
-            print(os.path.join(scriptDir, "clcache.py") + " " + msg)
+            print(os.path.join(scriptDir, "clcache.py") + " " + msg, file = of)
 
 
 class CommandLineTokenizer:
