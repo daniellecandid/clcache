@@ -1030,6 +1030,11 @@ def copyOrLink(srcFilePath, dstFilePath, writeCache=False):
             # links). This shouldn't be a problem though.
             os.utime(dstFilePath, None)
             return
+    elif "CLCACHE_SYMLINK" in os.environ:
+        ret = windll.kernel32.CreateSymbolicLinkW(str(dstFilePath), str(srcFilePath), 2)
+        if ret != 0:
+            #os.utime(dstFilePath, None)
+            return
 
     # If hardlinking fails for some reason (or it's not enabled), just
     # fall back to moving bytes around. Always to a temporary path first to
