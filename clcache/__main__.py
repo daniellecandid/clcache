@@ -237,11 +237,21 @@ class ManifestSection:
         manifestPath = self.manifestPath(manifestHash)
         printTraceStatement("Writing manifest with manifestHash = {} to {}".format(manifestHash, manifestPath))
         ensureDirectoryExists(self.manifestSectionDir)
-        with atomic_write(manifestPath, overwrite=True) as outFile:
-            # Converting namedtuple to JSON via OrderedDict preserves key names and keys order
-            entries = [e._asdict() for e in manifest.entries()]
-            jsonobject = {'entries': entries}
-            json.dump(jsonobject, outFile, sort_keys=True, indent=2)
+        le = None
+        for attempt in range(5):
+            try:
+                with atomic_write(manifestPath, overwrite=True) as outFile:
+                    # Converting namedtuple to JSON via OrderedDict preserves key names and keys order
+                    entries = [e._asdict() for e in manifest.entries()]
+                    jsonobject = {'entries': entries}
+                    json.dump(jsonobject, outFile, sort_keys=True, indent=2)
+            except OSError as e:
+                le = e
+                pass
+            else:
+                break
+        else:
+            raise le
 
     @untrackable
     def getManifest(self, manifestHash):
