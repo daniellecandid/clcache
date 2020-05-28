@@ -251,7 +251,11 @@ class ManifestSection:
             else:
                 break
         else:
-            raise le
+            with open(manifestPath, 'w') as outFile:
+                # Converting namedtuple to JSON via OrderedDict preserves key names and keys order
+                entries = [e._asdict() for e in manifest.entries()]
+                jsonobject = {'entries': entries}
+                json.dump(jsonobject, outFile, sort_keys=True, indent=2)            
 
     @untrackable
     def getManifest(self, manifestHash):
