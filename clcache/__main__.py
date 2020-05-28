@@ -338,6 +338,9 @@ class ManifestRepository:
         if 'Yu' in arguments:
             pchFile = CommandLineAnalyzer.getPchFileName(arguments)
             additionalData += getFileHash(pchFile)
+
+        printTraceStatement("Hashing {} -> {} / {} ...".format(commandLine, sourceFile, additionalData))
+
         return getFileHash(sourceFile, additionalData)
 
     @staticmethod
