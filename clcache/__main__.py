@@ -272,14 +272,6 @@ def allSectionsLocked(repository):
             section.lock.release()
 
 
-def readPCHHash(pchFile):
-    with open(pchFile+".clcache", 'r') as f:
-        return f.read()
-
-def writePCHHash(pchFile, hash):
-    with open(pchFile+".clcache", 'w') as f:
-        f.write('{}'.format(hash))
-
 class ManifestRepository:
     # Bump this counter whenever the current manifest file format changes.
     # E.g. changing the file format from {'oldkey': ...} to {'newkey': ...} requires
@@ -345,7 +337,7 @@ class ManifestRepository:
 
         if 'Yu' in arguments:
             pchFile = CommandLineAnalyzer.getPchFileName(arguments)
-            additionalData += readPCHHash(pchFile)
+            additionalData += getFileHash(pchFile)
         return getFileHash(sourceFile, additionalData)
 
     @staticmethod
@@ -453,7 +445,6 @@ class CompilerArtifactsSection:
         if artifacts.pchFilePath is not None:
             copyOrLink(artifacts.pchFilePath,
                        os.path.join(tempEntryDir, CompilerArtifactsSection.PCH_FILE))
-            writePCHHash(artifacts.pchFilePath, key)
         setCachedCompilerConsoleOutput(os.path.join(tempEntryDir, CompilerArtifactsSection.STDOUT_FILE),
                                        artifacts.stdout)
         if artifacts.stderr != '':
@@ -1590,7 +1581,6 @@ def processCacheHit(cache, objectFile, cachekey):
         copyOrLink(cachedArtifacts.objectFilePath, objectFile)
         if pchFile is not None:
             copyOrLink(cachedArtifacts.pchFilePath, pchFile)
-            writePCHHash(pchFile, cachekey)
 
         printTraceStatement("Finished. Exit code 0")
         return 0, cachedArtifacts.stdout, cachedArtifacts.stderr, False
