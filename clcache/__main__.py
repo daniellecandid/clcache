@@ -1777,10 +1777,7 @@ def filterSourceFiles(cmdLine: List[str], sourceFiles: List[Tuple[str, str]]) ->
 
 
 def findCompilerVersion(compiler: str) -> int:
-    compilerInfo = subprocess.Popen([compiler],
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT)
-    lines = []
+    compilerInfo = subprocess.Popen([compiler], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     with compilerInfo.stdout:
         for line in iter(compilerInfo.stdout.readline, b''): 
             compilerVersionLine = line.decode('utf-8')
