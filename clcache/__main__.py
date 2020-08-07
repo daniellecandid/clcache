@@ -1785,7 +1785,6 @@ def findCompilerVersion(compiler: str) -> int:
             break
     returncode = compilerInfo.wait() 
     if compilerVersionLine is None:
-        print("Using backup")
         compilerVersionLine = "Microsoft (R) C/C++ Optimizing Compiler Version 19.26.28806 for x64"
     compilerVersion = compilerVersionLine[compilerVersionLine.find("Version ") + 8:
                                           compilerVersionLine.find(" for")]
