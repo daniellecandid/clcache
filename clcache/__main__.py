@@ -1785,7 +1785,7 @@ def findCompilerVersion(compiler: str) -> int:
         for line in iter(compilerInfo.stdout.readline, b''): 
             compilerVersionLine = line.decode('utf-8')
             break
-    returncode = compilerProcess.wait() 
+    returncode = compilerInfo.wait() 
     compilerVersion = compilerVersionLine[compilerVersionLine.find("Version ") + 8:
                                           compilerVersionLine.find(" for")]
     return int(compilerVersion[:2] + compilerVersion[3:5])
