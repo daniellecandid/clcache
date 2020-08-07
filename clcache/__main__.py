@@ -1777,12 +1777,16 @@ def filterSourceFiles(cmdLine: List[str], sourceFiles: List[Tuple[str, str]]) ->
 
 
 def findCompilerVersion(compiler: str) -> int:
-    compilerInfo = subprocess.Popen([compiler], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    compilerInfo = subprocess.Popen(compiler, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    compilerVersionLine = None
     with compilerInfo.stdout:
         for line in iter(compilerInfo.stdout.readline, b''): 
             compilerVersionLine = line.decode('utf-8')
             break
     returncode = compilerInfo.wait() 
+    if compilerVersionLine is None:
+        print("Using backup")
+        compilerVersionLine = "Microsoft (R) C/C++ Optimizing Compiler Version 19.26.28806 for x64"
     compilerVersion = compilerVersionLine[compilerVersionLine.find("Version ") + 8:
                                           compilerVersionLine.find(" for")]
     return int(compilerVersion[:2] + compilerVersion[3:5])
