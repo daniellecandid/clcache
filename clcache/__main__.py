@@ -1780,7 +1780,12 @@ def findCompilerVersion(compiler: str) -> int:
     compilerInfo = subprocess.Popen([compiler],
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT)
-    compilerVersionLine = compilerInfo.communicate()[0].decode('utf-8').splitlines()[0]
+    lines = []
+    with compilerInfo.stdout:
+        for line in iter(compilerInfo.stdout.readline, b''): 
+            compilerVersionLine = line.decode('utf-8')
+            break
+    returncode = process.wait() 
     compilerVersion = compilerVersionLine[compilerVersionLine.find("Version ") + 8:
                                           compilerVersionLine.find(" for")]
     return int(compilerVersion[:2] + compilerVersion[3:5])
