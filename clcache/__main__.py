@@ -1628,6 +1628,9 @@ def main():
     # Therefore, these classes check the candidate path, and if it is not an
     # executable, stores it in the namespace as a special variable, and
     # the compiler argument Action then prepends it to its list of arguments
+    print("////////////////////////////////////")
+    print("////////  Using CLCache  ///////////")
+    print("////////////////////////////////////")
     class CommandCheckAction(argparse.Action):
         def __call__(self, parser, namespace, values, optional_string=None):
             if values and not values.lower().endswith(".exe"):
