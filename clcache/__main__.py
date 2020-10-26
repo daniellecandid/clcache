@@ -71,13 +71,17 @@ BASEDIR_REPLACEMENT = '?'
 NMPWAIT_WAIT_FOREVER = wintypes.DWORD(0xFFFFFFFF)
 ERROR_PIPE_BUSY = 231
 
+# Toolset version 140
+# https://devblogs.microsoft.com/cppblog/side-by-side-minor-version-msvc-toolsets-in-visual-studio-2017/
+TOOLSET_VERSION_140 = 140
+
 # ManifestEntry: an entry in a manifest file
 # `includeFiles`: list of paths to include files, which this source file uses
 # `includesContentsHash`: hash of the contents of the includeFiles
 # `objectHash`: hash of the object in cache
 ManifestEntry = namedtuple('ManifestEntry', ['includeFiles', 'includesContentHash', 'objectHash'])
 
-CompilerArtifacts = namedtuple('CompilerArtifacts', ['objectFilePath', 'stdout', 'stderr'])
+CompilerArtifacts = namedtuple('CompilerArtifacts', ['objectFilePath', 'pchFilePath', 'stdout', 'stderr'])
 
 def printBinary(stream, rawData):
     with OUTPUT_LOCK:
@@ -118,6 +122,46 @@ def normalizeBaseDir(baseDir):
         # Converts empty string to None
         return None
 
+
+class SuspendTracker():
+    fileTracker = None
+    def __init__(self):
+        if not SuspendTracker.fileTracker:
+            if windll.kernel32.GetModuleHandleW("FileTracker.dll"):
+                SuspendTracker.fileTracker = windll.FileTracker
+            elif windll.kernel32.GetModuleHandleW("FileTracker32.dll"):
+                SuspendTracker.fileTracker = windll.FileTracker32
+            elif windll.kernel32.GetModuleHandleW("FileTracker64.dll"):
+                SuspendTracker.fileTracker = windll.FileTracker64
+
+    def __enter__(self):
+        SuspendTracker.suspend()
+
+    def __exit__(self, typ, value, traceback):
+        SuspendTracker.resume()
+
+    @staticmethod
+    def suspend():
+        if SuspendTracker.fileTracker:
+            SuspendTracker.fileTracker.SuspendTracking()
+
+    @staticmethod
+    def resume():
+        if SuspendTracker.fileTracker:
+            SuspendTracker.fileTracker.ResumeTracking()
+
+def isTrackerEnabled():
+    return 'TRACKER_ENABLED' in os.environ
+
+def untrackable(func):
+    if not isTrackerEnabled():
+        return func
+
+    def untrackedFunc(*args, **kwargs):
+        with SuspendTracker():
+            return func(*args, **kwargs)
+
+    return untrackedFunc
 
 def getCachedCompilerConsoleOutput(path):
     try:
@@ -188,16 +232,32 @@ class ManifestSection:
     def manifestFiles(self):
         return filesBeneath(self.manifestSectionDir)
 
+    @untrackable
     def setManifest(self, manifestHash, manifest):
         manifestPath = self.manifestPath(manifestHash)
         printTraceStatement("Writing manifest with manifestHash = {} to {}".format(manifestHash, manifestPath))
         ensureDirectoryExists(self.manifestSectionDir)
-        with atomic_write(manifestPath, overwrite=True) as outFile:
-            # Converting namedtuple to JSON via OrderedDict preserves key names and keys order
-            entries = [e._asdict() for e in manifest.entries()]
-            jsonobject = {'entries': entries}
-            json.dump(jsonobject, outFile, sort_keys=True, indent=2)
+        le = None
+        for attempt in range(5):
+            try:
+                with atomic_write(manifestPath, overwrite=True) as outFile:
+                    # Converting namedtuple to JSON via OrderedDict preserves key names and keys order
+                    entries = [e._asdict() for e in manifest.entries()]
+                    jsonobject = {'entries': entries}
+                    json.dump(jsonobject, outFile, sort_keys=True, indent=2)
+            except OSError as e:
+                le = e
+                pass
+            else:
+                break
+        else:
+            with open(manifestPath, 'w') as outFile:
+                # Converting namedtuple to JSON via OrderedDict preserves key names and keys order
+                entries = [e._asdict() for e in manifest.entries()]
+                jsonobject = {'entries': entries}
+                json.dump(jsonobject, outFile, sort_keys=True, indent=2)            
 
+    @untrackable
     def getManifest(self, manifestHash):
         fileName = self.manifestPath(manifestHash)
         if not os.path.exists(fileName):
@@ -288,6 +348,13 @@ class ManifestRepository:
 
         additionalData = "{}|{}|{}".format(
             compilerHash, commandLine, ManifestRepository.MANIFEST_FILE_FORMAT_VERSION)
+
+        if 'Yu' in arguments:
+            pchFile = CommandLineAnalyzer.getPchFileName(arguments)
+            additionalData += getFileHash(pchFile)
+
+        printTraceStatement("Hashing {} -> {} / {} ...".format(commandLine, sourceFile, additionalData))
+
         return getFileHash(sourceFile, additionalData)
 
     @staticmethod
@@ -361,6 +428,7 @@ class CacheLock:
 
 class CompilerArtifactsSection:
     OBJECT_FILE = 'object'
+    PCH_FILE    = 'pch'
     STDOUT_FILE = 'output.txt'
     STDERR_FILE = 'stderr.txt'
 
@@ -391,6 +459,9 @@ class CompilerArtifactsSection:
             dstFilePath = os.path.join(tempEntryDir, CompilerArtifactsSection.OBJECT_FILE)
             copyOrLink(artifacts.objectFilePath, dstFilePath, True)
             size = os.path.getsize(dstFilePath)
+        if artifacts.pchFilePath is not None:
+            copyOrLink(artifacts.pchFilePath,
+                       os.path.join(tempEntryDir, CompilerArtifactsSection.PCH_FILE))
         setCachedCompilerConsoleOutput(os.path.join(tempEntryDir, CompilerArtifactsSection.STDOUT_FILE),
                                        artifacts.stdout)
         if artifacts.stderr != '':
@@ -405,6 +476,7 @@ class CompilerArtifactsSection:
         cacheEntryDir = self.cacheEntryDir(key)
         return CompilerArtifacts(
             os.path.join(cacheEntryDir, CompilerArtifactsSection.OBJECT_FILE),
+            os.path.join(cacheEntryDir, CompilerArtifactsSection.PCH_FILE),
             getCachedCompilerConsoleOutput(os.path.join(cacheEntryDir, CompilerArtifactsSection.STDOUT_FILE)),
             getCachedCompilerConsoleOutput(os.path.join(cacheEntryDir, CompilerArtifactsSection.STDERR_FILE))
             )
@@ -656,8 +728,11 @@ class PersistentJSONDict:
 
     def save(self):
         if self._dirty:
-            with atomic_write(self._fileName, overwrite=True) as f:
-                json.dump(self._dict, f, sort_keys=True, indent=4)
+            try:
+                with atomic_write(self._fileName, overwrite=True) as f:
+                    json.dump(self._dict, f, sort_keys=True, indent=4)
+            except OSError:
+                pass
 
     def __setitem__(self, key, value):
         self._dict[key] = value
@@ -738,6 +813,7 @@ class Statistics:
         self._stats = None
         self.lock = CacheLock.forPath(self._statsFile)
 
+    @untrackable
     def __enter__(self):
         self._stats = PersistentJSONDict(self._statsFile)
         for k in Statistics.RESETTABLE_KEYS | Statistics.NON_RESETTABLE_KEYS:
@@ -745,6 +821,7 @@ class Statistics:
                 self._stats[k] = 0
         return self
 
+    @untrackable
     def __exit__(self, typ, value, traceback):
         # Does not write to disc when unchanged
         self._stats.save()
@@ -772,9 +849,6 @@ class Statistics:
 
     def numCallsWithPch(self):
         return self._stats[Statistics.CALLS_WITH_PCH]
-
-    def registerCallWithPch(self):
-        self._stats[Statistics.CALLS_WITH_PCH] += 1
 
     def numCallsForLinking(self):
         return self._stats[Statistics.CALLS_FOR_LINKING]
@@ -868,10 +942,6 @@ class CalledForLinkError(AnalysisError):
     pass
 
 
-class CalledWithPchError(AnalysisError):
-    pass
-
-
 class ExternalDebugInfoError(AnalysisError):
     pass
 
@@ -920,7 +990,8 @@ def getFileHashes(filePaths):
 def getFileHash(filePath, additionalData=None):
     hasher = HashAlgorithm()
     with open(filePath, 'rb') as inFile:
-        hasher.update(inFile.read())
+        for chunk in iter(lambda: inFile.read(4096), b""):
+            hasher.update(chunk)
     if additionalData is not None:
         # Encoding of this additional data does not really matter
         # as long as we keep it fixed, otherwise hashes change.
@@ -980,6 +1051,11 @@ def copyOrLink(srcFilePath, dstFilePath, writeCache=False):
             # links). This shouldn't be a problem though.
             os.utime(dstFilePath, None)
             return
+    elif "CLCACHE_SYMLINK" in os.environ:
+        ret = windll.kernel32.CreateSymbolicLinkW(str(dstFilePath), str(srcFilePath), 2)
+        if ret != 0:
+            #os.utime(dstFilePath, None)
+            return
 
     # If hardlinking fails for some reason (or it's not enabled), just
     # fall back to moving bytes around. Always to a temporary path first to
@@ -1028,7 +1104,6 @@ def findCompilerBinary():
             if path.upper() != myExecutablePath():
                 return path
     return None
-
 
 def printTraceStatement(msg: str) -> None:
     if "CLCACHE_LOG" in os.environ:
@@ -1280,6 +1355,18 @@ class CommandLineAnalyzer:
         return dict(arguments), inputFiles
 
     @staticmethod
+    def getPchFileName(options):
+        if 'Fp' in options:
+            return options['Fp'][0]
+        if 'Yc' in options:
+            option = options['Yc'][0]
+        elif 'Yu' in options:
+            option = options['Yu'][0]
+        else:
+            return None
+        return basenameWithoutExtension(option) + '.pch'
+
+    @staticmethod
     def analyze(cmdline: List[str]) -> Tuple[List[Tuple[str, str]], List[str]]:
         options, inputFiles = CommandLineAnalyzer.parseArgumentsAndInputFiles(cmdline)
         # Use an override pattern to shadow input files that have
@@ -1307,9 +1394,6 @@ class CommandLineAnalyzer:
         if 'Zi' in options:
             raise ExternalDebugInfoError()
 
-        if 'Yc' in options or 'Yu' in options:
-            raise CalledWithPchError()
-
         if 'link' in options or 'c' not in options:
             raise CalledForLinkError()
 
@@ -1328,6 +1412,11 @@ class CommandLineAnalyzer:
         if objectFiles is None:
             # Generate from .c/.cpp filenames
             objectFiles = [os.path.join(prefix, basenameWithoutExtension(f)) + '.obj' for f, _ in inputFiles]
+
+        if 'Yc' in options:
+            assert len(objectFiles) == 1
+            pchFile = CommandLineAnalyzer.getPchFileName(options)
+            objectFiles = [(objectFiles[0], pchFile)]
 
         printTraceStatement("Compiler source files: {}".format(inputFiles))
         printTraceStatement("Compiler object file: {}".format(objectFiles))
@@ -1410,8 +1499,7 @@ clcache statistics:
     called for linking         : {}
     called for external debug  : {}
     called w/o source          : {}
-    called w/ multiple sources : {}
-    called w/ PCH              : {}""".strip()
+    called w/ multiple sources : {}""".strip()
 
     with cache.statistics.lock, cache.statistics as stats, cache.configuration as cfg:
         print(template.format(
@@ -1430,7 +1518,6 @@ clcache statistics:
             stats.numCallsForExternalDebugInfo(),
             stats.numCallsWithoutSourceFile(),
             stats.numCallsWithMultipleSourceFiles(),
-            stats.numCallsWithPch(),
         ))
 
 
@@ -1496,7 +1583,8 @@ def addObjectToCache(stats, cache, cachekey, artifacts):
     size = cache.setEntry(cachekey, artifacts)
     if size is None:
         size = os.path.getsize(artifacts.objectFilePath)
-    stats.registerCacheEntry(size)
+    stats.registerCacheEntry(size +
+                            os.path.getsize(artifacts.pchFilePath) if artifacts.pchFilePath else 0)
 
     with cache.configuration as cfg:
         return stats.currentCacheSize() >= cfg.maximumCacheSize()
@@ -1504,6 +1592,7 @@ def addObjectToCache(stats, cache, cachekey, artifacts):
 
 def processCacheHit(cache, objectFile, cachekey):
     printTraceStatement("Reusing cached object for key {} for object file {}".format(cachekey, objectFile))
+    objectFile, pchFile = objectFile if isinstance(objectFile, tuple) else (objectFile, None)
 
     with cache.lockFor(cachekey):
         with cache.statistics.lock, cache.statistics as stats:
@@ -1514,6 +1603,9 @@ def processCacheHit(cache, objectFile, cachekey):
 
         cachedArtifacts = cache.getEntry(cachekey)
         copyOrLink(cachedArtifacts.objectFilePath, objectFile)
+        if pchFile is not None:
+            copyOrLink(cachedArtifacts.pchFilePath, pchFile)
+
         printTraceStatement("Finished. Exit code 0")
         return 0, cachedArtifacts.stdout, cachedArtifacts.stderr, False
 
@@ -1536,6 +1628,9 @@ def main():
     # Therefore, these classes check the candidate path, and if it is not an
     # executable, stores it in the namespace as a special variable, and
     # the compiler argument Action then prepends it to its list of arguments
+    print("////////////////////////////////////")
+    print("////////  Using CLCache  ///////////")
+    print("////////////////////////////////////")
     class CommandCheckAction(argparse.Action):
         def __call__(self, parser, namespace, values, optional_string=None):
             if values and not values.lower().endswith(".exe"):
@@ -1659,9 +1754,6 @@ def processCompileRequest(cache, compiler, args):
     except MultipleSourceFilesComplexError:
         printTraceStatement("Cannot cache invocation as {}: multiple source files found".format(cmdLine))
         updateCacheStatistics(cache, Statistics.registerCallWithMultipleSourceFiles)
-    except CalledWithPchError:
-        printTraceStatement("Cannot cache invocation as {}: precompiled headers in use".format(cmdLine))
-        updateCacheStatistics(cache, Statistics.registerCallWithPch)
     except CalledForLinkError:
         printTraceStatement("Cannot cache invocation as {}: called for linking".format(cmdLine))
         updateCacheStatistics(cache, Statistics.registerCallForLinking)
@@ -1686,6 +1778,40 @@ def filterSourceFiles(cmdLine: List[str], sourceFiles: List[Tuple[str, str]]) ->
         if not (arg in setOfSources or arg.startswith(skippedArgs))
     )
 
+
+def findCompilerVersion(compiler: str) -> int:
+    compilerInfo = subprocess.Popen(compiler, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    compilerVersionLine = None
+    with compilerInfo.stdout:
+        for line in iter(compilerInfo.stdout.readline, b''): 
+            compilerVersionLine = line.decode('utf-8')
+            break
+    returncode = compilerInfo.wait() 
+    if compilerVersionLine is None:
+        compilerVersionLine = "Microsoft (R) C/C++ Optimizing Compiler Version 19.26.28806 for x64"
+    compilerVersion = compilerVersionLine[compilerVersionLine.find("Version ") + 8:
+                                          compilerVersionLine.find(" for")]
+    return int(compilerVersion[:2] + compilerVersion[3:5])
+
+
+def findToolsetVersion(compilerVersion: int) -> int:
+    versionMap = {1400: 80,
+                  1500: 90,
+                  1600: 100,
+                  1700: 110,
+                  1800: 120,
+                  1900: 140}
+
+    if compilerVersion in versionMap:
+        return versionMap[compilerVersion]
+    elif 1910 <= compilerVersion < 1920:
+        return 141
+    elif 1920 <= compilerVersion < 1930:
+        return 142
+    else:
+        raise LogicException('Bad cl.exe version: {}'.format(compilerVersion))
+
+
 def scheduleJobs(cache: Any, compiler: str, cmdLine: List[str], environment: Any,
                  sourceFiles: List[Tuple[str, str]], objectFiles: List[str]) -> int:
     # Filter out all source files from the command line to form baseCmdLine
@@ -1693,7 +1819,14 @@ def scheduleJobs(cache: Any, compiler: str, cmdLine: List[str], environment: Any
 
     exitCode = 0
     cleanupRequired = False
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobCount(cmdLine)) as executor:
+
+    def poolExecutor(*args, **kwargs) -> concurrent.futures.Executor:
+        if isTrackerEnabled():
+            if findToolsetVersion(findCompilerVersion(compiler)) < TOOLSET_VERSION_140:
+                return concurrent.futures.ProcessPoolExecutor(*args, **kwargs)
+        return concurrent.futures.ThreadPoolExecutor(*args, **kwargs)
+
+    with poolExecutor(max_workers=min(jobCount(cmdLine), len(objectFiles))) as executor:
         jobs = []
         for (srcFile, srcLanguage), objFile in zip(sourceFiles, objectFiles):
             jobCmdLine = baseCmdLine + [srcLanguage + srcFile]
@@ -1804,13 +1937,15 @@ def processNoDirect(cache, objectFile, compiler, cmdLine, environment):
 def ensureArtifactsExist(cache, cachekey, reason, objectFile, compilerResult, extraCallable=None):
     cleanupRequired = False
     returnCode, compilerOutput, compilerStderr = compilerResult
+    objectFile, pchFile = objectFile if isinstance(objectFile, tuple) else (objectFile, None)
+
     correctCompiliation = (returnCode == 0 and os.path.exists(objectFile))
     with cache.lockFor(cachekey):
         if not cache.hasEntry(cachekey):
             with cache.statistics.lock, cache.statistics as stats:
                 reason(stats)
                 if correctCompiliation:
-                    artifacts = CompilerArtifacts(objectFile, compilerOutput, compilerStderr)
+                    artifacts = CompilerArtifacts(objectFile, pchFile, compilerOutput, compilerStderr)
                     cleanupRequired = addObjectToCache(stats, cache, cachekey, artifacts)
             if extraCallable and correctCompiliation:
                 extraCallable()
